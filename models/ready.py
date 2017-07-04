@@ -8,10 +8,11 @@ Lab:            CAMEL
 
 import numpy as np
 import tensorflow as tf
+import json
 
 from models.tea import TEA
-from models.neuralnet import NeuralNet
 import utils.file_ops as fops
+import models.nnblocks as nn
 
 
 class READY:
@@ -91,16 +92,34 @@ class READY:
         #         shape=[1],
         #         initializer=tf.contrib.layers.xavier_initializer()
         #     )
-        sizes   = [embedding_size+1, 25, 1]
-        acts    = [tf.nn.relu, tf.identity]
+        # sizes   = [embedding_size + num_features + 1, 25, 1]
+        # acts    = [tf.nn.relu, tf.identity]
 
-        with tf.variable_scope('classifier'):
-            self.classifier = NeuralNet(sizes, acts)
+        # with tf.variable_scope('classifier'):
+        #     self.classifier = NeuralNet(sizes, acts)
+
+        lrelu = nn.lrelu_gen(0.1)
+
+        def build_network(X):
+            sizes = [num_features + embedding_size + 1, 100, 50, 25, 12, 6, 1]
+
+            def block(x, in_dim, out_dim, i):
+                with tf.variable_scope('block_{}'.format(i)):
+                    z = nn.build_residual_block(x, in_dim)
+                    return nn.build_fc_layer(z, lrelu, in_dim, out_dim)
+
+            z = X
+
+            with tf.variable_scope('classifier'):
+                for i in range(1, len(sizes)):
+                    z = block(z, sizes[i-1], sizes[i], i-1)
+
+            return z
 
         # Connect the full model
         t               = tf.constant(0)
         score_init      = tf.zeros([tf.shape(self.X)[0]])
-        embedded_init   = tf.zeros([tf.shape(self.X)[0], num_features])
+        x_init          = tf.zeros([tf.shape(self.X)[0], num_features])
 
         # Create the network
         def constructor(t, score_prev, X_prev):
@@ -112,8 +131,8 @@ class READY:
             X = tf.add(X, X_prev)
 
             emb = self.tea.embedding(X)
-            score = self.classifier.create_network(
-                tf.concat([emb, tf.expand_dims(score_prev, 1)], axis=1)
+            score = build_network(
+                tf.concat([emb, tf.expand_dims(score_prev, 1), X_prev], axis=1)
             )
 
             t       = tf.add(t, 1)
@@ -127,11 +146,11 @@ class READY:
         _, net_scores, _ = tf.while_loop(
             lambda t, s, x: t < tf.shape(self.X)[1],
             constructor,
-            loop_vars=[t, score_init, embedded_init],
+            loop_vars=[t, score_init, x_init],
             shape_invariants=[
                 t.get_shape(),
                 score_init.get_shape(),
-                embedded_init.get_shape()
+                x_init.get_shape()
             ]
         )
 
@@ -306,10 +325,19 @@ class READY:
                 else:
                     avg_malicious.append(label)
 
-            self.print('Average Bengin: {}'.format(np.mean(avg_benign)))
-            self.print('Average Malicious: {}'.format(np.mean(avg_malicious)))
+            data = {
+                'benign': {
+                    'mean': float(np.mean(avg_benign)),
+                    'stddev': float(np.std(avg_benign))
+                },
+                'malicious': {
+                    'mean': float(np.mean(avg_malicious)),
+                    'stddev': float(np.std(avg_malicious))
+                }
+            }
 
             # self.print(json.dumps(rtn_dict, indent=4))
+            self.print(json.dumps(data, indent=4))
 
     def print(self, val):
         if self.debug:
